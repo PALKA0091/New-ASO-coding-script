@@ -1,0 +1,54 @@
+After generating potential ASOs, that fit all of the criteria defined in the final filtering coding in the ASO sequence prediction model, the following code evaluates the potential binidng affinity of the elected ASOs to unintented transcripts.
+This analysis estimates the thermodynamic stability of potential off-target duplexes by incorporating mismatch penalties derived from Hagehorn et al. (2017)
+In that study, the authors illustrate how mismatches between an ASO and a target RNA increase Gibbs free energy(ΔG) of duplex formation, thereby reducing binding affinity. 
+Most importantly, the impact of these penalties are strongly correlated with the local sequence environment of the mismatch, since there are big changes in binding kinetic penalty - meaning that the bases adjacent to the mismatch can influence the destabilizing effect.
+These sequence-environment effects arise from the differences in base interactions, differential Watson-Crick bonding patterna and local duplex geometry within the DNA:RNA helix. 
+The calculations will follow the baseline scores as seen in Hagedorn et al. (2017), here they calculate the binding affinity of the ASO to potential off-targets by calculating the differences in binding kinetics caused by a mismatch, while factoring in their neighbours. 
+
+```{r}
+# Context-dependent mismatch ΔΔG penalties (kcal/mol)
+# Examples from Figure 3 of Hagedorn et al.
+mismatch_penalty_tbl <- tibble::tribble(
+  ~left, ~ref, ~alt, ~right, ~ddG,
+  "G", "C", "G", "C", 1.9,
+  "G", "C", "T", "C", 3.6,
+  "C", "G", "G", "A", 3.8,
+  "C", "G", "T", "A", 3.3
+)
+```
+
+```{r}
+calc_mismatch_penalty <- function(target_seq, oligo_seq){
+  
+  target_seq <- as.character(target_seq)
+  oligo_bind <- as.character(reverseComplement(DNAString(oligo_seq)))
+  
+  tvec <- strsplit(target_seq, "")[[1]]
+  ovec <- strsplit(oligo_bind, "")[[1]]
+  
+  penalty <- 0
+  
+  for(i in seq_along(tvec)){
+    
+    if(tvec[i] != ovec[i]){
+      
+      left  <- if(i == 1) NA else tvec[i-1]
+      ref   <- tvec[i]
+      alt   <- ovec[i]
+      right <- if(i == length(tvec)) NA else tvec[i+1]
+      
+      hit <- mismatch_penalty_tbl %>%
+        filter(left == !!left,
+               ref  == !!ref,
+               alt  == !!alt,
+               right == !!right)
+      
+      if(nrow(hit) > 0){
+        penalty <- penalty + hit$ddG
+      }
+    }
+  }
+  
+  penalty
+}
+```
