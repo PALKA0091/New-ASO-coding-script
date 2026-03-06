@@ -1,0 +1,53 @@
+This code is to asssesment of neurotoxicity of the ASO, since the content of both G/Cs and LNA modifications are important  factors when designing ASOs. 
+Code is retrieved from Acute Neurotoxicity of Antisense Oligonucleotides After Intracerebroventricular Injection Into Mouse Brain Can Be Predicted from Sequence Featuresdoi: 10.1089/nat.2021.0071
+
+It only becomes feasible to use this code whenever both the LNA flanks have been predicted onto the ASO sequences. 
+They mention in the paper, that all of the ASO's which had minimal or no signs of acute neurotoxicity, they had designed had a calculated score of >70 by their algorithm (the one below). 
+The scoring is heavily affected by the amount of G's in the ASO sequence aswell as the position of the G's. If there was a G at the 3'-end of the ASO sequence, the resulting acute toxicity was rising. 
+
+
+SUPPLEMENTARY METHODS
+
+Computer code for calculating acute neurotoxicity scores
+The trained model is implemented as a function in the R programming language as shown below
+
+calculate_acute_neurotox <- function(xx) {
+  ## make sure input is in character format
+  xx <- as.character(xx)
+
+  ## count the number of each nucleotide
+  lf <- function(x) {
+    x <- tolower(x)
+    x <- strsplit(x, "")[[1]]
+    x <- table(factor(x,levels=c("a","c","t","g")))
+    return(x)
+  }
+  cnt_nt <- as.data.frame(t(sapply(xx, lf)))
+  ## count number of nucleotides from the 3'-end that are not g
+  gfree3 <- function(x) {
+    x <- tolower(x)
+    x <- strsplit(x, "")[[1]]
+    tfg <- x=="g"
+    if (sum(tfg)==0) {
+      l3 <- NA
+    } else {
+      posg <- c(1:length(x))[tfg]
+      l3 <- length(x)-max(posg)
+    }
+    return(l3)
+  }
+  cnt_gfree3 <- sapply(xx, gfree3)
+  cnt_gfree3[cnt_gfree3>20] <- 20      #Set max to 20
+  cnt_gfree3[is.na(cnt_gfree3)] <- 20  #Set no g in ASO to 20
+  ## Calculate final score based on trained parameters and return result
+  calc_out <- round(136.0430 - 3.1263*cnt_nt$a - 5.1100*cnt_nt$c -
+            4.7217*cnt_nt$t - 10.1264*cnt_nt$g + 1.3577*cnt_gfree3,1) 
+
+  return(as.numeric(calc_out))
+}
+
+To load the function, copy/paste the code (text in Courier font) to the R programming environment.
+
+Example
+Once the calculate_acute_neurotox function has been loaded into the R programming environment, scores can be calculated for ASO sequences. As an example, scores are calculated for the sequences AAAtctataataaccacCAC, CAAAtcatccatctatAAAC, and TACcatacaataactttAAC and stored in the vector calc_out using the following command in R
+calc_out <- calculate_acute_neurotox(c("AAAtctataataaccacCAC", "CAAAtcatccatctatAAAC", "TACcatacaataactttAAC"))
