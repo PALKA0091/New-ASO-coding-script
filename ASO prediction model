@@ -1,0 +1,508 @@
+---
+title: "CerS2"
+output: html_document
+date: "2026-02-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The following packages have to be installed prior to working with the ASO prediction model that has been coded here. 
+```{r}
+install.packages("BiocManager")
+library(BiocManager)
+
+
+BiocManager::install("BSgenome.Hsapiens.NCBI.GRCh38")
+BiocManager::install("GenomicFeatures")
+BiocManager::install("Biostrings")
+BiocManager::install("biomaRt")
+BiocManager::install("AnnotationDbi")
+ BiocManager::install("GenomeInfoDbData")
+BiocManager::install("txdbmaker")
+install.packages("tidyverse")
+install.packages("cluster")
+options(repos = BiocManager::repositories())
+```
+
+In addition to these packages, the ViennaRNA 2.7.2 software package has to be installed in order to predict the structure and accessibility of the target mRNA. Retrieve the source code from their website and install the software by following the instructions in the README and INSTALL file accompanied with the Source Code download. 
+https://www.tbi.univie.ac.at/RNA/ 
+The ViennaRNA 2.7.2 package is a prediction model that is programmed to analyze RNA secondary structures, i.e. self-folding, accessibility of (for this case) ASO to the pre-mRNA/mRNA. 
+The software isn't specifically incooperated into the R-script, but rather as a complementary software program downloaded into the source code of the computer. 
+
+
+All of the required packages are loaded into the R-script by using the library() function
+```{r}
+library(GenomicFeatures)
+library(AnnotationDbi)
+library(BSgenome.Hsapiens.NCBI.GRCh38)
+library(biomaRt)
+library(Biostrings)
+library(tidyverse)
+library(cluster)
+
+```
+
+Make a designated folder for, where you can save the Db-document and define a  'path' to it, so you can direct its save to that location. This is particularly important!!
+The options-timeout function is to increase the amount of time RStudio can use to do all of the future commands, i.e. downloading the whole human transcriptome down into a Db-file (which takes a long time)
+
+```{r}
+path <- "~/Desktop/ASO design/Annotations"
+options(timeout = 2400) 
+```
+We obtain all human gene and transcript genomic coordinates (annotations) and store them in a TxDB file to be more reusable. TLDR; this code generates a database file, that is going to be stored in file that was designated in the path-directory.
+IMPORTANT: ONLY RUN THIS CODE ONCE AND MAKE SURE DB-FILE IS SAVED IN THE DESIGNATED PATH FOLDER. When the file has been properly saved, then minimize this code and don't run it again, as we will from here on load the Db-file directly into the R-script later.
+```{r}
+library(GenomicFeatures)
+library(AnnotationDbi)
+txdb_hsa = txdbmaker::makeTxDbFromBiomart(
+  biomart    = "ENSEMBL_MART_ENSEMBL",
+  dataset    = "hsapiens_gene_ensembl",
+  taxonomyId = 9606,
+)
+saveDb(txdb_hsa, "txdb_hsa_biomart.db")
+```
+
+The following code loads the gene annotation database that we generated before into the R-script from the designated path. We also trim down the all the annotations to only include the 23 standard chromosomes and extract all of their genomic DNA sequences out from the reference genome - in this case the hg38 genome. 
+
+```{r}
+txdb_hsa = loadDb(paste0(path,"/txdb_hsa_biomart.db"))
+gdb_hsa = genes(txdb_hsa)
+chr_to_keep = c(as.character(1:22),"X","Y","MT")
+Hsapiens@user_seqnames <- setNames(chr_to_keep, chr_to_keep)
+Hsapiens@seqinfo <- Hsapiens@seqinfo[chr_to_keep]
+gdb_hsa = gdb_hsa[seqnames(gdb_hsa)%in% chr_to_keep]
+HS = getSeq(Hsapiens,gdb_hsa)
+```
+
+Now that we have generated a HS function which encodes for all of the human pre-mRNA sequences. From this, we can now establish a RNA-target by defining the ENSEMBL_ID - in this case the target is CerS2. 
+
+```{r}
+ensembl_ID ="ENSG00000143418"
+RNA_target = HS[names(HS)==ensembl_ID]
+```
+
+The following code then defines the genomic coordinates for the target gene and annotates both the sense (1) and antisense (-1) strand. 
+
+```{r}
+target_ranges = gdb_hsa[names(gdb_hsa)==ensembl_ID]
+
+chr_coord = c(
+  chr=as.numeric(as.character(seqnames(target_ranges))),
+  start=start(target_ranges),
+  end=end(target_ranges),
+  strand=ifelse(strand(target_ranges)=="+",1,-1)
+  )
+
+```
+
+Since we want to generate a platform that may generate ASOs for future therapeutics, then we also integrate the genomic coordinates for mice, if these ASOs ever go into pre-clinical in vivo trials. 
+in vitro --> pre-clinical in vivo studies --> clinical
+
+```{r}
+martMM = useMart(biomart = "ensembl",
+                 dataset = "mmusculus_gene_ensembl")
+
+martHS = useMart(biomart = "ensembl",
+                 dataset = "hsapiens_gene_ensembl")
+ortho_ENS = getBM(attributes = "mmusculus_homolog_ensembl_gene",
+                  filters = "ensembl_gene_id",
+                  values = ensembl_ID, mart = martHS,
+                  bmHeader = FALSE)
+RNA_target_mouse = DNAStringSet(
+  getBM(attributes = c("gene_exon_intron","ensembl_gene_id"),
+        filters = "ensembl_gene_id",
+        values = ortho_ENS$mmusculus_homolog_ensembl_gene,
+        mart = martMM)$gene_exon_intron)
+```
+
+From the ENSEMBL_ID, we can also assess potential single nucleotide polymorphisms, which may interfere in the affinity of the ASO binding potential -  frequent SNPs can therefore be found in the following code, and later on we may define restrictions as to how high of a frequency of SNPs at a selected site may be in the ASO prediction model. 
+
+```{r}
+PMs = getBM(attributes = c("minor_allele_freq",
+                           "chromosome_start"),
+            filters = "ensembl_gene_id",
+            values = ensembl_ID,
+            mart = martHS)%>%
+  as_tibble() %>%
+  arrange(chromosome_start,
+          desc(minor_allele_freq)) %>%
+  filter(!is.na(minor_allele_freq),
+         !duplicated(chromosome_start)) %>%
+  rename(chr_start=chromosome_start,
+         PM_freq=minor_allele_freq)
+
+```
+
+Now that we have established the genomic coordinates of the pre-mRNA sequence, frequency of SNPs and compared its conservation in mice, we can integrate the ViennaRNA package. 
+The first code below predicts the accessibility of the RNA target's pre-mRNA. This will generate the probabilities of which the ASO might bind to the pre-mRNA. 
+
+```{r}
+RNAplfold_R = function(seq.char, L.in = 40, W.in = 80, u.in = 16){
+  cmmnd2 = paste("RNAplfold -L",L.in,"-W", W.in, "-u",u.in)
+  seq.char = as.character(seq.char)
+  cat(seq.char, file = paste("|", cmmnd2, sep = ""))
+  acc.tx=read.delim("plfold_lunp", as.is = T, skip = 2,
+                    header = F, row.names = 1)
+  acc.tx = acc.tx[, colSums(is.na(acc.tx)) !=nrow(acc.tx)]
+  colnames(acc.tx) = 1:ncol(acc.tx)
+  file.remove("plfold_lunp")
+  file.remove("plfold_dp.ps")
+  return(acc.tx)
+}
+```
+
+The next two ViennaRNA code (RNAduplex_R and RNAselffold_R) predicts the duplex formation, the binding kinetics between the ssDNA ASO and the pre-mRNA RNA target, and the possibility of the oligonucleotide self-folding onto itself.
+
+```{r}
+RNAduplex_R = function(seqs){
+  sys_cmd = system('RNAduplex',input = c(seqs,seqs),
+                   intern = TRUE)
+  as.numeric(sapply(
+strsplit(sys_cmd, "\\s+", perl = T), 
+function(x){ gsub("\\(|\\)", "", tail(x, n=1) )
+}))
+}
+```
+
+```{r}
+RNAselffold_R = function(seqs){
+  output = system("RNAfold --noPS",input = c(seqs),
+                  intern = T)
+  output = unlist(strsplit(output[grepl("[0-9]", 
+  output)], "[(]"))
+  as.double(gsub(" |[)]", "", output[grepl("[0-9]",
+output)]))
+}
+
+
+```
+
+To sum up the above code and the saved functions we have:
+º HS, a DNAStringset with all human pre-mRNA sequences.
+º RNA_target, Genomic coordinates of the RNA_target
+º Chr_coord, chromosomal location data of the RNA_target
+º PMs, frequency of SNPs in the RNA_target
+From these functions, we can start designing our ASOs.
+___________________________________________________________________________________________________________________
+
+The first thing to do, is to split the RNA_target up into sections ranging from 14-20 nucleotides, which acts as the base length of the ASOs. Furthermore, we annotate these split sections with genomic coordinates - on both the sense and antisense strand.
+
+```{r}
+l = width(RNA_target)
+oligo_lengths = 14:20
+
+target_annotation = lapply(oligo_lengths, function(i){
+  tibble(start=1:(l-i+1), length=i)}) %>%
+  bind_rows() %>%
+  mutate(end=start+length-1)
+```
+
+Now, the sequence of the nucleobase is extracted and put into a table 'target_annotation' under the coloumn 'name'. 
+
+```{r}
+target_regions = DNAStringSet(
+  RNA_target[[1]],
+  start = target_annotation$start,
+  width = target_annotation$length)
+names(target_regions) = as.character(target_regions)
+target_annotation$name = names(target_regions)
+```
+
+It has been previously observed, that if the nucleobase sequence is repeated within the same RNA_target, then the potency of the KD is increased. Therefore, we assess whether the nucleobase sequence is repeated within the RNA_target and add it the frequency of the repeat into the target_annotation table by the following command: target_annotation$NoRepeats = as.vector(replica[tr]).
+In the table, it will go under the colomn 'NoRepeats' and the number generated will be the amount of times the sequence is repeated in the RNA_target sequence.
+
+```{r}
+tr = target_annotation$name
+replica = table(tr)
+target_annotation$NoRepeats = as.vector(replica[tr])
+```
+
+Now we want to compute how many times the nucleobase sequence of the RNA_target sequence occurs in the whole human pre-mRNA transcripts. We search for perfect matches X$gene_hits_pm$, to see if there are any sequences of the 14-20 nucleobase sequence in the RNA_target that is repeated anywhere in the genome. Furthermore, we also assess for potential off-targets with a single mismatch in the genome 'X$gene_hits_1_mm$'. 
+
+```{r}
+uni_tar = dplyr::select(target_annotation,name, length) %>%
+  unique()%>%
+  split(.,.$length)
+uni_tar = lapply(uni_tar,function(X) {
+  dict0 = PDict(X$name, max.mismatch = 0)
+  dict1 = PDict(X$name, max.mismatch = 1)
+  #perfect match
+  pm = vwhichPDict(
+    pdict = dict0, subject = HS,
+    max.mismatch = 0, min.mismatch = 0)
+  X$gene_hits_pm = tabulate(unlist(pm), nbins = nrow(X))
+  
+  #single mismatch
+  mm1 = vwhichPDict(
+    pdict = dict1, subject = HS,
+    max.mismatch = 1, min.mismatch = 1)
+  X$gene_hits_1mm = tabulate(unlist(mm1),nbins = nrow(X))
+  X
+  }) %>%
+    bind_rows()
+
+```
+
+In the following section, we want to evaluate the accessibility of each target region defined in the RNA_target using the oligo_lengths function. The code will generate a coloumn where the probabilities of the RNA_target being in an unfolded state. 
+Then, in the end of the code, we merge the accessibility into the target_annotation table to have the sequence and its accessibility side-by-side. 
+```{r}
+acc <- RNAplfold_R(RNA_target, u.in = max(oligo_lengths))
+acc <- tibble(end = as.integer(rownames(acc)), acc)
+
+accessibility <- acc %>%
+  pivot_longer(-end, names_to="length", values_to="accessibility") %>%
+  mutate(length = as.double(length))
+
+target_annotation <- left_join(target_annotation, accessibility,
+                               by=c("length","end"))
+
+target_annotation
+```
+
+We want to avoid, as beforementioned, designing ASO gapmers at areas with high frequency of SNPs in the general population, therefore we start annotating the SNP frequency for the whole RNA_target. 
+The SNP frequency is then merged into the target_annotation data frame under the colomn PMmax. 
+```{r}
+if (chr_coord["strand"]==1){
+  target_annotation$chr_start = chr_coord["start"]+ target_annotation$start -1
+  target_annotation$chr_end = chr_coord["start"] + target_annotation$end -1
+}else {
+  target_annotation$chr_start =chr_coord["end"] - target_annotation$end +1
+  target_annotation$chr_end =chr_coord["end"] - target_annotation$start+1
+}
+
+PMmax = PMs %>%
+  mutate(name = map(chr_start,function(X){
+    filter(target_annotation,
+           chr_start <= X,
+           chr_end >= X)$name
+  })) %>%
+  unnest() %>%
+  arrange(desc(PM_freq)) %>%
+  filter(!duplicated(name))
+
+target_annotation = left_join(
+  target_annotation, PMmax,
+  by = c("name", "chr_start")
+)
+
+```
+
+As mentioned before, it is important for pre-clinical in vivo studies in mice, to have a nucleobase sequence that is conserved both in humans and mice, so that the oligos can be evaluated pharmacodynamicly. Here, the nucleobase sequence has to have a perfect match to the orthologue sequence in mice. Then we add the conserved_in_mmuscuslus coloumn, which gives either a FALSE or TRUE hit, depending on if the sequence is conserved in mice or not. 
+
+```{r}
+lm = width(RNA_target_mouse)
+MM_tab = lapply(oligo_lengths, function(i){
+  tibble(st=1:(lm-i+1),w=i)}) %>%
+  bind_rows()
+RNAsitesMM = DNAStringSet(
+  RNA_target_mouse[[1]],
+  start = MM_tab$st,
+  width = MM_tab$w
+)
+uni_tar$conserved_in_mmusculus =
+  uni_tar$name %in% RNAsitesMM
+```
+
+The in vivo neurotoxicity of dinucleotide CGs has previously been established, which we want to quantify.
+
+```{r}
+uni_tar$CGs = (uni_tar$length - nchar(gsub("CG","",uni_tar$name)))/2
+```
+
+Neurotoxicity assessment
+
+This code is to asssesment of neurotoxicity of the ASO, since the content of both G/Cs and LNA modifications are important  factors when designing ASOs. 
+Code is retrieved from Acute Neurotoxicity of Antisense Oligonucleotides After Intracerebroventricular Injection Into Mouse Brain Can Be Predicted from Sequence Featuresdoi: 10.1089/nat.2021.0071
+
+It only becomes feasible to use this code whenever both the LNA flanks have been predicted onto the ASO sequences. 
+They mention in the paper, that all of the ASO's which had minimal or no signs of acute neurotoxicity, they had designed had a calculated score of >70 by their algorithm (the one below). 
+The scoring is heavily affected by the amount of G's in the ASO sequence aswell as the position of the G's. If there was a G at the 3'-end of the ASO sequence, the resulting acute toxicity was rising. 
+
+```{r}
+calculate_acute_neurotox <- function(xx) {
+  ## make sure input is in character format
+  xx <- as.character(xx)
+
+  ## count the number of each nucleotide
+  lf <- function(x) {
+    x <- tolower(x)
+    x <- strsplit(x, "")[[1]]
+    x <- table(factor(x,levels=c("a","c","t","g")))
+    return(x)
+  }
+  cnt_nt <- as.data.frame(t(sapply(xx, lf)))
+  ## count number of nucleotides from the 3'-end that are not g
+  gfree3 <- function(x) {
+    x <- tolower(x)
+    x <- strsplit(x, "")[[1]]
+    tfg <- x=="g"
+    if (sum(tfg)==0) {
+      l3 <- NA
+    } else {
+      posg <- c(1:length(x))[tfg]
+      l3 <- length(x)-max(posg)
+    }
+    return(l3)
+  }
+  cnt_gfree3 <- sapply(xx, gfree3)
+  cnt_gfree3[cnt_gfree3>20] <- 20      #Set max to 20
+  cnt_gfree3[is.na(cnt_gfree3)] <- 20  #Set no g in ASO to 20
+  ## Calculate final score based on trained parameters and return result
+  calc_out <- round(136.0430 - 3.1263*cnt_nt$a - 5.1100*cnt_nt$c -
+            4.7217*cnt_nt$t - 10.1264*cnt_nt$g + 1.3577*cnt_gfree3,1) 
+
+  return(as.numeric(calc_out))
+}
+```
+
+Chemical modifications of ASOs
+Since most ASOs are single stranded DNA sequences, meaning that they require an abundance of chemical modifications like Locked-Nucleic-Acids flank (LNA) and phosphorothioates (PS) modifications on the backbone in order to increase binding energy to the pre-mRNA target, increase its stability and improve its pharmokinetics. Usually, you have LNA on the flanks of the oligo and PS-bonds on the backbone of the sequence. 
+In short, without these chemical modifications, ASOs would be unstable, weakly active, and clinically ineffective. Modifications transform them from simple nucleic acids into viable therapeutic molecules.
+
+In the code, we define the layout of the ASO gapmer and design a mask which will indicate where the LNA-modifications are and the DNA(gapmer) will occur - all depending on the length of the gapmer.
+Example; if the gapmer is 20 nucleotides (k>=20), then the 5 outmost (flanking) nucleotides will be modified with LNA-mods and the remaining 10 in the middle will serve as the gapmer (gap)
+
+```{r}
+gapmer_structure <- function(k) {
+  if (k >= 20) return(list(flank = 5, gap = 10))
+  if (k >= 18) return(list(flank = 4, gap = 10))
+  if (k == 16) return(list(flank = 3, gap = 10))
+  if (k == 14) return(list(flank = 3, gap = 8))
+  
+  # sensible prediction for 15/17 length gapmers
+  gap <- max(8, floor(k * 0.55))
+  flank <- floor((k - gap)/2)
+  return(list(flank = flank, gap = gap))
+}
+
+make_gapmer_mask <- function(k) {
+  gs <- gapmer_structure(k)
+  flank <- gs$flank
+  gap   <- gs$gap
+  
+  paste0(
+    strrep("L", flank),
+    strrep("D", gap),
+    strrep("L", flank)
+  )
+}
+```
+We have now defined the neurotoxicity and made a mask for modifications of the oligos. We can now start designing our ASOs.
+
+The first two lines of code extracts the target regions in uni_tar$name and converts them into a DNAString object (package tool).
+Then, we take each of the target_regions and convert them into their reverse complementary sequence using the reverseComplement function from the BioStrings package. The generated reverse complementary sequences are therefore directly going to be the our antisense oligonucleotide sequences. These sequences are put into the uni_tar data frame under a oligo_seq coloumn.
+The last line of code then calculates the neurotoxicity of each of the oligo_sequences using the calculation defined in lines 322-356. This calculation of each oligo_seq is then put into the uni_tar data frame.
+
+
+```{r}
+nucleobase_seq <- DNAStringSet(unique(uni_tar$name))
+names(nucleobase_seq) <- as.character(nucleobase_seq)
+
+nucleobase_seq <- reverseComplement(nucleobase_seq)
+uni_tar$oligo_seq <- as.character(nucleobase_seq[uni_tar$name])
+
+uni_tar$acute_neurotox <- calculate_acute_neurotox(uni_tar$oligo_seq)
+```
+
+The following code isn't really necessary, it just calculates the amount LNA-modified bases and 'normal' DNA bases within the sequence and puts a mask onto it. 
+
+```{r}
+# We apply a dynamic form of gapmer design. 
+uni_tar$mod_sugar <- vapply(
+  nchar(uni_tar$oligo_seq),
+  make_gapmer_mask,
+  character(1)
+)
+
+# Structural gapmer features (usually this step is optional, but it looks cleaner.)
+uni_tar$gap_size <- vapply(
+  nchar(uni_tar$oligo_seq),
+  function(k) gapmer_structure(k)$gap,
+  numeric(1)
+)
+
+uni_tar$flank_size <- vapply(
+  nchar(uni_tar$oligo_seq),
+  function(k) gapmer_structure(k)$flank,
+  numeric(1)
+)
+
+uni_tar$lna_count <- 2 * uni_tar$flank_size
+```
+
+To calculate the duplex energy (binding affinity of the oligo_seq to the RNA_target) and the oligos self-folding properties, the first two lines of code is ran. These two calculates the minimum free-energy for self-folding and duplex formation of each generated oligo.
+
+The last two lines of codes adjust for the increase in duplex energy, since the amount of LNA-modifications increase the binding affinity for of the oligo to the RNA_target. 
+It is approximated that the each LNA-modification provides ~1 kcal/mol of thermodynamic stability of the oligo sequence, however, this is an estimation, as we don't have exact experimental data to be more specific of their thermokinetics. Their contribution to the thermodynamic stability is therefore defined as alpha = 1 . Later, this duplex_energy is adjusted with this parameter and integrated into the uni_tar data frame. 
+
+ΔG°37 per LNA: roughly ~0.5–1.5 kcal/mol
+(very sequence and position dependent)
+So α ≈ 1 kcal/mol
+```{r}
+uni_tar$sec_energy = RNAselffold_R(uni_tar$oligo_seq)
+uni_tar$duplex_energy = RNAduplex_R(uni_tar$oligo_seq)
+
+alpha <- 0.75  # kcal/mol per LNA 
+uni_tar$duplex_energy_adj <- uni_tar$duplex_energy - alpha * uni_tar$lna_count
+```
+
+In the R-script environment, there are now two data_frames 'target_annotation' and 'uni_tar'. To recall, the 'target_annotation' data frame contains the positional coordinates for the target_regions on the RNA_target aswell as SNP frequency for these. 'uni_tar' includes the target_region specificity (perfect match and 1 mismatch off-targets), aswell as the gapmer oligo sequences containing their duplex energy, self-folding energy, neurotoxicity assessment, CGs dinucleotide count and chemical modifications. The two are merged into a new data frame named target_regions.
+
+```{r}
+target_regions = left_join(
+  target_annotation,
+  uni_tar,
+  by = c("name","length")
+)
+```
+
+The final step before generating the ASOs, we have to gate the generation behind a series of criteria:
+º gene_hits_pm == 1, this code makes it so that we only allow for ASOs which only have a perfect sequence match in the target sequence.
+º gene_hits_1mm <= 50, this code does not allow for usage of target_regions with a single mismatch in more than 50 transcripts.
+º accessibility > 1E-6, this code removes any of highly inaccessible regions in the RNA_target with predicted accessibility > 1E-6 
+º PM_freq < 0.05, this code discards target regions with >5% SNP frequencies.
+º acute_neurotox >55, this code removes any oligo_seqs with a toxicity score below 55.
+º conserved_in_mmusculus, this code only generates ASOs, where the target region is conserved in mice. 
+
+```{r}
+target_region_select <- target_regions %>%
+  filter(
+    gene_hits_pm == 1,
+    gene_hits_1mm <= 50,
+    accessibility > 1E-6,
+    PM_freq < 0.05 | is.na(PM_freq),
+    acute_neurotox >55,
+  conserved_in_mmusculus
+)
+```
+
+The last chunk of code clusters candidate target regions by their genomic coordinates and then at a random selects candidate target regions from each cluster. This allows for the generation of ASOs that span the whole pre-mRNA, as opposed to only having ASOs targeting one candidate target site. 
+
+
+```{r}
+library(cluster)
+K = 200 # this defines how many you candidate target regions you want to generate. 
+start_pos <- sort(unique(target_region_select$start))
+x <- matrix(start_pos, ncol = 1)
+
+n <- nrow(x)
+K_use <- min(K, n - 1)
+K_use <- max(K_use, 1)
+
+cluster_tab <- tibble(
+  start = start_pos,
+  cluster = if (n >= 2) clara(x, k = K_use, metric="euclidean",
+                             pamLike=TRUE, samples=100)$clustering
+            else rep(1L, n)
+)
+
+nucleobase_select = left_join(target_region_select, 
+                              cluster_tab, by="start") %>%
+group_by(cluster) %>% sample_n(1) %>% 
+  ungroup()
+
+nucleobase_select
+
+```
