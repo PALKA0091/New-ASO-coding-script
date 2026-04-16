@@ -5,8 +5,8 @@ It only becomes feasible to use this code whenever both the LNA flanks have been
 They mention in the paper, that all of the ASO's which had minimal or no signs of acute neurotoxicity, they had designed had a calculated score of >70 by their algorithm (the one below). 
 The scoring is heavily affected by the amount of G's in the ASO sequence aswell as the position of the G's. If there was a G at the 3'-end of the ASO sequence, the resulting acute toxicity was rising. 
 
+The code has already been implemented into the prediction model and also incooperated into the selection criteria in order to avoid the abundant acute neurotoxicity of the sequence structure of the antisense oligonucleotides. 
 
-SUPPLEMENTARY METHODS
 
 Computer code for calculating acute neurotoxicity scores
 The trained model is implemented as a function in the R programming language as shown below
