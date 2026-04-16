@@ -21,4 +21,4 @@ Output: a table (nucleobase_select) of prioritized ASO candidates.
 
 Requirements for running this R-script: R / Bioconductor packages: BiocManager, GenomicFeatures, txdbmaker, biomaRt, AnnotationDbi, BSgenome.Hsapiens.NCBI.GRCh38, GenomeInfoDbData, Biostrings, tidyverse, cluster
 
-External software dependency: ViennaRNA You must install ViennaRNA (tested with 2.7.2) and ensure the binaries are available on your PATH: RNAplfold RNAfold RNAduplex
+External software dependency: ViennaRNA You must install ViennaRNA (this code has been done in Vienna_RNA ver. 2.7.2) and ensure the binaries are available on your PATH: RNAplfold RNAfold RNAduplex
